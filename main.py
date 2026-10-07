@@ -4,6 +4,7 @@ from fastapi import FastAPI, status, APIRouter, HTTPException, Query, Path, Depe
 from fastapi.middleware.cors import CORSMiddleware
 
 from typing import Annotated
+from datetime import timedelta
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -111,7 +112,10 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    access_token = auth_module.create_access_token(subject=user.get("username") or username)
+    access_token = auth_module.create_access_token(
+        subject=user.get("username") or username,
+        expires_delta=timedelta(minutes=auth_module.ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
     return {"access_token": access_token, "token_type": "bearer"}
 
 
@@ -126,32 +130,56 @@ async def verify_user(current_user: dict = Depends(auth_module.get_current_user)
 
 # Collections Routes
 @collection_router.post("", tags=["Collections"])
-async def create_collection(collection: CollectionCreate):
-    db["Collections"].insert_one(collection.model_dump())
-    return {"message": f"Collection created {collection}"}
+async def create_collection(collection: CollectionCreate, current_user: dict = Depends(auth_module.get_current_user)):
+    # The owner always comes from the token, never from the request body
+    doc = collection.model_dump()
+    doc["owner"] = current_user["username"]
+    db["Collections"].insert_one(doc)
+    return {"message": f"Collection created {collection.id}"}
 
 
 @collection_router.put("/{id}", tags=["Collections"])
-async def update_collection(updatedCollection: Collection, id: Annotated[str, Path(title="The id of the collection to update")]):
-    db["Collections"].find_one_and_update(
-        {"id": id},
+async def update_collection(
+    updatedCollection: Collection,
+    id: Annotated[str, Path(title="The id of the collection to update")],
+    current_user: dict = Depends(auth_module.get_current_user),
+):
+    res = db["Collections"].find_one_and_update(
+        {"id": id, "owner": current_user["username"]},
         {"$set": updatedCollection.model_dump()}
     )
-    
+    if res is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Collection with id {id} not found"
+        )
+
     return {"message": f"Collection with id {id} updated"}
 
 
 @collection_router.delete("/{id}", tags=["Collections"])
-async def delete_collection(id: Annotated[str, Path(title="The id of the collection to delete")]):
-    res = db["Collections"].find_one_and_delete({"id": id})
+async def delete_collection(
+    id: Annotated[str, Path(title="The id of the collection to delete")],
+    current_user: dict = Depends(auth_module.get_current_user),
+):
+    res = db["Collections"].find_one_and_delete({"id": id, "owner": current_user["username"]})
     if res:
         return {"message": f"Collection with {id} deleted"}
-    
+
     return {"message": f"Collection with {id} not found"}
 
 
 @collection_router.get("/{owner}", tags=["Collections"])
-async def get_user_collections(owner: Annotated[str, Path(title="The username of the user")]):
+async def get_user_collections(
+    owner: Annotated[str, Path(title="The username of the user")],
+    current_user: dict = Depends(auth_module.get_current_user),
+):
+    if owner != current_user["username"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view your own collections"
+        )
+
     res = db["Collections"].find({"owner": owner})
     if res is not None:
         docs = [serialize_doc(doc) for doc in res]

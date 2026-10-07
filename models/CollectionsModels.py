@@ -8,7 +8,7 @@ class Collection(BaseModel):
     type: str = Field(default="Unknown")
 
 class CollectionCreate(Collection):
-    owner: str = Field(alias="username")
+    owner: str = Field(default="", alias="username")  # overwritten server-side from the token
     name: str = Field()
     description: str | None = Field(default=None)
     id: str = Field()
